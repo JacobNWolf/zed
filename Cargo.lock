@@ -5414,6 +5414,7 @@ dependencies = [
  "tracing",
  "tree-sitter-bash",
  "tree-sitter-c",
+ "tree-sitter-css",
  "tree-sitter-html",
  "tree-sitter-md",
  "tree-sitter-python",
