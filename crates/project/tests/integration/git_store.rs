@@ -1715,3 +1715,93 @@ mod resolve_worktree_tests {
         }
     }
 }
+
+/// External git operations that change `.git` metadata without necessarily updating worktree entries
+/// should still refresh repository state (see `GitStore::local_worktree_git_repos_changed`).
+#[cfg(not(windows))]
+mod worktree_git_repo_update_tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::Project;
+
+    use fs::RealFs;
+    use gpui::TestAppContext;
+    use project::git_store::{GitStoreEvent, RepositoryEvent};
+    use serde_json::json;
+    use smol::process::Command;
+    use util::test::TempTree;
+    use worktree::WorktreeModelHandle as _;
+
+    #[gpui::test]
+    async fn external_empty_commit_emits_head_changed(cx: &mut TestAppContext) {
+        crate::init_test(cx);
+        cx.executor().allow_parking();
+
+        let root = TempTree::new(json!({
+            "project": {
+                "tracked.txt": "content",
+            }
+        }));
+
+        let work_dir = root.path().join("project");
+        let repo = crate::git_init(work_dir.as_path());
+        crate::git_add("tracked.txt", &repo);
+        crate::git_commit("Initial commit", &repo);
+
+        let head_before = repo.head().unwrap().target().unwrap().to_string();
+
+        let project = Project::test(
+            Arc::new(RealFs::new(None, cx.executor())),
+            [root.path()],
+            cx,
+        )
+        .await;
+
+        let repository_updates = Arc::new(Mutex::new(Vec::new()));
+        project.update(cx, |project, cx| {
+            let repo_events = repository_updates.clone();
+            cx.subscribe(project.git_store(), move |_, _, event, _| {
+                if let GitStoreEvent::RepositoryUpdated(_, event, _) = event {
+                    repo_events.lock().unwrap().push(event.clone());
+                }
+            })
+            .detach();
+        });
+
+        let tree = project.read_with(cx, |project, cx| project.worktrees(cx).next().unwrap());
+        tree.flush_fs_events(cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        cx.executor().run_until_parked();
+
+        let output = Command::new("git")
+            .current_dir(&work_dir)
+            .args(["commit", "--allow-empty", "-m", "empty"])
+            .output()
+            .await
+            .expect("git commit");
+        assert!(
+            output.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        tree.flush_fs_events(cx).await;
+        project
+            .update(cx, |project, cx| project.git_scans_complete(cx))
+            .await;
+        cx.executor().run_until_parked();
+
+        let head_after = repo.head().unwrap().target().unwrap().to_string();
+        assert_ne!(head_before, head_after, "git commit should advance HEAD");
+
+        let events = repository_updates.lock().unwrap().clone();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, RepositoryEvent::HeadChanged)),
+            "expected HeadChanged after external git metadata change; got {events:?}"
+        );
+    }
+}

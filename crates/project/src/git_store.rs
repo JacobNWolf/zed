@@ -1437,18 +1437,19 @@ impl GitStore {
                     );
                     return;
                 }
+                let updates_tx = downstream
+                    .as_ref()
+                    .map(|downstream| downstream.updates_tx.clone());
                 self.update_repositories_from_worktree(
                     *worktree_id,
                     project_environment.clone(),
                     next_repository_id.clone(),
-                    downstream
-                        .as_ref()
-                        .map(|downstream| downstream.updates_tx.clone()),
+                    updates_tx.clone(),
                     changed_repos.clone(),
                     fs.clone(),
                     cx,
                 );
-                self.local_worktree_git_repos_changed(worktree, changed_repos, cx);
+                self.local_worktree_git_repos_changed(worktree, changed_repos, updates_tx, cx);
             }
             WorktreeStoreEvent::WorktreeRemoved(_entity_id, worktree_id) => {
                 let repos_without_worktree: Vec<RepositoryId> = self
@@ -1825,9 +1826,12 @@ impl GitStore {
         &mut self,
         worktree: Entity<Worktree>,
         changed_repos: &UpdatedGitRepositoriesSet,
+        updates_tx: Option<mpsc::UnboundedSender<DownstreamUpdate>>,
         cx: &mut Context<Self>,
     ) {
-        log::debug!("local worktree repos changed");
+        log::debug!(
+            "local worktree repos changed; refreshing diff bases and scheduling status scan"
+        );
         debug_assert!(worktree.read(cx).is_local());
 
         for repository in self.repositories.values() {
@@ -1838,6 +1842,7 @@ impl GitStore {
                         || update.new_work_directory_abs_path.as_ref() == Some(repo_abs_path)
                 }) {
                     repository.reload_buffer_diff_bases(cx);
+                    repository.schedule_scan(updates_tx.clone(), cx);
                 }
             });
         }
