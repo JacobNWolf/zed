@@ -1777,7 +1777,16 @@ mod worktree_git_repo_update_tests {
 
         let output = Command::new("git")
             .current_dir(&work_dir)
-            .args(["commit", "--allow-empty", "-m", "empty"])
+            .args([
+                "-c",
+                "user.email=test@zed.dev",
+                "-c",
+                "user.name=test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "empty",
+            ])
             .output()
             .await
             .expect("git commit");
